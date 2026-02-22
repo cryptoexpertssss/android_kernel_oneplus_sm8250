@@ -2,19 +2,12 @@ name: Build OnePlus 6T Pentest Kernel
 
 on:
   workflow_dispatch:
-    inputs:
-      KERNEL_SOURCE:
-        description: 'Kernel Source (owner/repo)'
-        required: true
-        default: 'reocat/android_kernel_oneplus6'
-      KERNEL_SOURCE_BRANCH:
-        description: 'Kernel Source Branch'
-        required: true
-        default: 'development'
-      KERNEL_DEFCONFIG:
-        description: 'Defconfig'
-        required: true
-        default: 'sdm845-perf_defconfig'
+  push:
+    branches:
+      - HEAD
+  pull_request:
+    branches:
+      - HEAD
 
 jobs:
   build:
@@ -24,7 +17,9 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       CCACHE_MAXSIZE: "2G"
       CCACHE_HARDLINK: "true"
+      KERNEL_DEFCONFIG: "Acai-Nethunter-V9_defconfig"
       KERNEL_CMDLINE: "ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+      KPM_PATCH_SOURCE: "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux"
 
     steps:
       - name: Maximize Build Space
@@ -34,37 +29,38 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
 
+      - name: Clone Nethunter Kernel Source
+        run: |
+          git clone --depth=100 -b hentai-q https://github.com/plushie-neko/op6-op6t-nethunter-kernel kernel-source
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
           sudo apt install gcc-aarch64-linux-gnu -y
           sudo apt install gcc-arm-linux-gnueabi -y
-          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip ca-certificates xz-utils cpio device-tree-compiler git git-lfs -y
-
-      - name: Clone Kernel Source
-        run: |
-          git clone --depth=1 -b ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }} https://github.com/${{ github.event.inputs.KERNEL_SOURCE }} kernel-source
-
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-
-      - name: Download ZyCromerZ Clang
-        run: |
-          cd kernel-source
-          CLANG_LINK=$(curl -fsSL https://github.com/ZyCromerZ/Clang/raw/main/Clang-main-link.txt)
-          aria2c -j$(nproc --all) "$CLANG_LINK"
-          mkdir -p zyc-clang
-          tar -xzf Clang-*.tar.gz -C zyc-clang
-          rm -f Clang-*.tar.gz
+          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip libssl-dev ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
 
       - name: Integrate SukiSU-Ultra + SusFS
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-          # Fix MODULE_IMPORT_NS: macro doesn't exist in Kernel 4.9, Clang 23 treats it as hard error
-          sed -i '/MODULE_IMPORT_NS/d' KernelSU/kernel/ksu.c
-          # Fix Clang 23 strict warnings in KSU for Kernel 4.9
-          echo 'ccflags-y += -Wno-implicit-int -Wno-implicit-function-declaration' >> KernelSU/kernel/Kbuild
+
+      - name: Download ZyCromerZ Clang 10
+        run: |
+          cd kernel-source
+          aria2c -j$(nproc --all) $(curl -fsSL https://github.com/ZyCromerZ/Clang/raw/main/Clang-10-link.txt)
+          mkdir zyc-clang
+          tar -xzf Clang-*.tar.gz -C zyc-clang > /dev/null
+          rm -f Clang-*.tar.gz
+
+      - name: Download KPM Patcher
+        run: |
+          aria2c -j$(nproc --all) $KPM_PATCH_SOURCE
+          sudo install -m 755 patch_linux /usr/bin/kpmpatcher
+          rm patch_linux
 
       - name: Setup AnyKernel3
         run: |
@@ -78,22 +74,21 @@ jobs:
         run: |
           cd kernel-source
           export PATH=$(pwd)/zyc-clang/bin/:$PATH
-          # Fix gcc-wrapper for Python 3
-          printf '#!/usr/bin/env python3\nimport sys, subprocess\ntry:\n    proc = subprocess.Popen(sys.argv[1:], stderr=subprocess.PIPE)\n    for line in proc.stderr:\n        sys.stderr.write(line.decode("utf-8", "ignore"))\n    sys.exit(proc.wait())\nexcept Exception as e:\n    sys.stderr.write(str(e) + "\\n"); sys.exit(1)\n' > scripts/gcc-wrapper.py
-          chmod +x scripts/gcc-wrapper.py
-          make $KERNEL_CMDLINE ${{ github.event.inputs.KERNEL_DEFCONFIG }} CC="ccache clang"
-          echo "CONFIG_KSU=y" >> out/.config
+          make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang"
           make $KERNEL_CMDLINE CC="ccache clang" -j$(nproc --all)
 
-      - name: Prepare Flashable Zip
+      - name: KPM Patcher
         run: |
-          if [ -f "kernel-source/out/arch/arm64/boot/Image" ]; then
-            cp kernel-source/out/arch/arm64/boot/Image AnyKernel3/
-            echo "Kernel Image copied to AnyKernel3"
+          cd kernel-source/out/arch/arm64/boot
+          if [[ -f "Image" ]]; then
+              kpmpatcher
+              mv oImage Image
+              echo "Hook Image successfully!"
           else
-            echo "Build FAILED - no Image found"
-            exit 1
+              echo "No valid Image file found."
+              exit 1
           fi
+          cp Image ../../../../AnyKernel3 || cp Image ../../../../../AnyKernel3
 
       - name: Get Time
         id: get_time
@@ -103,5 +98,5 @@ jobs:
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OP6T-Pentest-Kernel-SukiSU-${{ steps.get_time.outputs.TIME }}
+          name: OP6T-Pentest-KSUN-${{ steps.get_time.outputs.TIME }}
           path: "AnyKernel3/*"
