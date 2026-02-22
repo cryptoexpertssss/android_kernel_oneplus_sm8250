@@ -1,0 +1,115 @@
+name: Build OnePlus 6T Pentest Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        description: 'Kernel Source (owner/repo)'
+        required: true
+        default: 'reocat/android_kernel_oneplus6'
+      KERNEL_SOURCE_BRANCH:
+        description: 'Kernel Source Branch'
+        required: true
+        default: 'android-msm-4.9'
+      KERNEL_DEFCONFIG:
+        description: 'Defconfig'
+        required: true
+        default: 'sdm845-perf_defconfig'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_HARDLINK: "true"
+      KERNEL_CMDLINE: "ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt install gcc-aarch64-linux-gnu -y
+          sudo apt install gcc-arm-linux-gnueabi -y
+          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip libssl-dev ca-certificates xz-utils cpio device-tree-compiler git git-lfs -y
+
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 -b ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }} https://github.com/${{ github.event.inputs.KERNEL_SOURCE }} kernel-source
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+
+      - name: Download ZyCromerZ Clang
+        run: |
+          cd kernel-source
+          CLANG_LINK=$(curl -fsSL https://github.com/ZyCromerZ/Clang/raw/main/Clang-main-link.txt)
+          aria2c -j$(nproc --all) "$CLANG_LINK"
+          mkdir -p zyc-clang
+          tar -xzf Clang-*.tar.gz -C zyc-clang
+          rm -f Clang-*.tar.gz
+
+      - name: Integrate SukiSU-Ultra + SusFS
+        run: |
+          cd kernel-source
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          # Fix MODULE_IMPORT_NS for Kernel 4.9 + Clang 23 (macro doesn't exist in 4.9)
+          sed -i '/MODULE_IMPORT_NS/d' KernelSU/kernel/ksu.c
+
+      - name: Setup AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+          rm -rf AnyKernel3/.git* AnyKernel3/README.md
+
+      - name: Build Kernel
+        run: |
+          cd kernel-source
+          export PATH=$(pwd)/zyc-clang/bin/:$PATH
+          # Fix gcc-wrapper for Python 3
+          cat << 'PYEOF' > scripts/gcc-wrapper.py
+          #!/usr/bin/env python3
+          import sys, subprocess
+          try:
+              proc = subprocess.Popen(sys.argv[1:], stderr=subprocess.PIPE)
+              for line in proc.stderr:
+                  sys.stderr.write(line.decode("utf-8", "ignore"))
+              sys.exit(proc.wait())
+          except Exception as e:
+              sys.stderr.write(str(e) + "\n"); sys.exit(1)
+          PYEOF
+          chmod +x scripts/gcc-wrapper.py
+          make $KERNEL_CMDLINE ${{ github.event.inputs.KERNEL_DEFCONFIG }} CC="ccache clang"
+          echo "CONFIG_KSU=y" >> out/.config
+          make $KERNEL_CMDLINE CC="ccache clang" -j$(nproc --all)
+
+      - name: Prepare Flashable Zip
+        run: |
+          if [ -f "kernel-source/out/arch/arm64/boot/Image" ]; then
+            cp kernel-source/out/arch/arm64/boot/Image AnyKernel3/
+            echo "Kernel Image copied to AnyKernel3"
+          else
+            echo "Build FAILED - no Image found"
+            exit 1
+          fi
+
+      - name: Get Time
+        id: get_time
+        run: |
+          echo "TIME=$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OP6T-Pentest-Kernel-SukiSU-${{ steps.get_time.outputs.TIME }}
+          path: "AnyKernel3/*"
