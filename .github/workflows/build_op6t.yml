@@ -10,7 +10,7 @@ on:
       KERNEL_SOURCE_BRANCH:
         description: 'Kernel Source Branch'
         required: true
-        default: 'android-msm-4.9'
+        default: 'development'
       KERNEL_DEFCONFIG:
         description: 'Defconfig'
         required: true
