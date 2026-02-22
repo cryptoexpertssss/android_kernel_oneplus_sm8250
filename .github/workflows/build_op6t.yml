@@ -1,13 +1,7 @@
-name: Build OnePlus 6T Pentest Kernel
+name: Build OP6T Pentest Kernel
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - HEAD
-  pull_request:
-    branches:
-      - HEAD
 
 jobs:
   build:
@@ -39,16 +33,15 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt install gcc-aarch64-linux-gnu -y
-          sudo apt install gcc-arm-linux-gnueabi -y
-          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip libssl-dev ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
+          sudo apt install gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi -y
+          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
 
       - name: Integrate SukiSU-Ultra + SusFS
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
 
-      - name: Download ZyCromerZ Clang 10
+      - name: Download ZyCromerZ Clang
         run: |
           cd kernel-source
           aria2c -j$(nproc --all) $(curl -fsSL https://github.com/ZyCromerZ/Clang/raw/main/Clang-10-link.txt)
@@ -70,6 +63,44 @@ jobs:
           sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
           rm -rf AnyKernel3/.git* AnyKernel3/README.md
 
+      - name: Apply Pentest Stealth Hardening
+        run: |
+          cd kernel-source
+          # ============================================
+          # KERNEX STEALTH CONFIG OVERRIDES
+          # Applied AFTER defconfig, BEFORE compilation
+          # ============================================
+          cat >> arch/arm64/configs/$KERNEL_DEFCONFIG << 'STEALTH'
+
+          # --- KERNEX: Stealth & Anti-Detection ---
+          # Reduce printk noise (hide kernel boot signatures)
+          CONFIG_PRINTK_SAFE_LOG_BUF_SHIFT=12
+          # Disable debug info in kernel binary (reduces forensic surface)
+          # CONFIG_DEBUG_INFO is not set
+          # Disable kernel address exposure via /proc
+          CONFIG_RANDOMIZE_BASE=y
+          # Reduce /proc exposure
+          # CONFIG_KALLSYMS is not set
+          # Disable kprobes (reduces KSU detection surface)
+          # CONFIG_KPROBE_EVENTS is not set
+          # --- Network Pentest Support ---
+          # USB Gadget for HID attacks (BadUSB/Rubber Ducky)
+          CONFIG_USB_CONFIGFS_F_HID=y
+          CONFIG_USB_G_HID=y
+          # Raw socket support for packet crafting
+          CONFIG_PACKET=y
+          CONFIG_PACKET_DIAG=y
+          # TUN/TAP for VPN tunneling
+          CONFIG_TUN=y
+          # NFQUEUE for iptables packet interception
+          CONFIG_NETFILTER_NETLINK_QUEUE=y
+          CONFIG_NETFILTER_XT_TARGET_NFQUEUE=y
+          # Bridge for network MITM
+          CONFIG_BRIDGE=y
+          CONFIG_BRIDGE_NF_EBTABLES=y
+          STEALTH
+          echo "[+] Pentest stealth hardening applied to defconfig"
+
       - name: Build Kernel
         run: |
           cd kernel-source
@@ -83,20 +114,25 @@ jobs:
           if [[ -f "Image" ]]; then
               kpmpatcher
               mv oImage Image
-              echo "Hook Image successfully!"
+              echo "[+] KPM hooks patched into Image"
           else
-              echo "No valid Image file found."
+              echo "[-] Build FAILED - no Image found"
               exit 1
           fi
-          cp Image ../../../../AnyKernel3 || cp Image ../../../../../AnyKernel3
+
+      - name: Package Flashable Zip
+        run: |
+          cp kernel-source/out/arch/arm64/boot/Image AnyKernel3/
+          cd AnyKernel3
+          echo "kernel.string=OP6T Pentest Kernel | SukiSU + SusFS + Nethunter | $(date +%Y%m%d)" >> anykernel.sh
 
       - name: Get Time
         id: get_time
         run: |
           echo "TIME=$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
 
-      - name: Upload Kernel Artifact
+      - name: Upload Pentest Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: OP6T-Pentest-KSUN-${{ steps.get_time.outputs.TIME }}
+          name: OP6T-Pentest-SukiSU-Nethunter-${{ steps.get_time.outputs.TIME }}
           path: "AnyKernel3/*"
