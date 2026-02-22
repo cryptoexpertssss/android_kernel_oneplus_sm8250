@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update -y
           sudo apt install gcc-aarch64-linux-gnu -y
           sudo apt install gcc-arm-linux-gnueabi -y
-          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip libssl-dev ca-certificates xz-utils cpio device-tree-compiler git git-lfs -y
+          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip ca-certificates xz-utils cpio device-tree-compiler git git-lfs -y
 
       - name: Clone Kernel Source
         run: |
@@ -61,8 +61,10 @@ jobs:
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-          # Fix MODULE_IMPORT_NS for Kernel 4.9 + Clang 23 (macro doesn't exist in 4.9)
+          # Fix MODULE_IMPORT_NS: macro doesn't exist in Kernel 4.9, Clang 23 treats it as hard error
           sed -i '/MODULE_IMPORT_NS/d' KernelSU/kernel/ksu.c
+          # Fix Clang 23 strict warnings in KSU for Kernel 4.9
+          echo 'ccflags-y += -Wno-implicit-int -Wno-implicit-function-declaration' >> KernelSU/kernel/Kbuild
 
       - name: Setup AnyKernel3
         run: |
@@ -77,17 +79,7 @@ jobs:
           cd kernel-source
           export PATH=$(pwd)/zyc-clang/bin/:$PATH
           # Fix gcc-wrapper for Python 3
-          cat << 'PYEOF' > scripts/gcc-wrapper.py
-          #!/usr/bin/env python3
-          import sys, subprocess
-          try:
-              proc = subprocess.Popen(sys.argv[1:], stderr=subprocess.PIPE)
-              for line in proc.stderr:
-                  sys.stderr.write(line.decode("utf-8", "ignore"))
-              sys.exit(proc.wait())
-          except Exception as e:
-              sys.stderr.write(str(e) + "\n"); sys.exit(1)
-          PYEOF
+          printf '#!/usr/bin/env python3\nimport sys, subprocess\ntry:\n    proc = subprocess.Popen(sys.argv[1:], stderr=subprocess.PIPE)\n    for line in proc.stderr:\n        sys.stderr.write(line.decode("utf-8", "ignore"))\n    sys.exit(proc.wait())\nexcept Exception as e:\n    sys.stderr.write(str(e) + "\\n"); sys.exit(1)\n' > scripts/gcc-wrapper.py
           chmod +x scripts/gcc-wrapper.py
           make $KERNEL_CMDLINE ${{ github.event.inputs.KERNEL_DEFCONFIG }} CC="ccache clang"
           echo "CONFIG_KSU=y" >> out/.config
